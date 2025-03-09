@@ -20,6 +20,8 @@ import ru.yandex.architectureproject.domain.GetAllTasksUseCase
 import ru.yandex.architectureproject.domain.IncompleteTaskUseCase
 import ru.yandex.architectureproject.presentation.state.TaskAction
 import ru.yandex.architectureproject.presentation.state.TaskState
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ConcurrentMap
 
 class TaskViewModel(
     private val addTaskUseCase: AddTaskUseCase,
@@ -32,7 +34,8 @@ class TaskViewModel(
     private val _state = MutableStateFlow<TaskState>(TaskState.Loading)
     val state: StateFlow<TaskState> = _state.asStateFlow()
 
-    private val taskForDeletionJobMap: MutableMap<Int, Job?> = mutableMapOf()
+    private val taskForDeletionJobMap: ConcurrentMap<Int, Job?> = ConcurrentHashMap()
+    private var collectJob: Job? = null
 
     init {
         reduce(TaskAction.LoadTasks)
@@ -50,7 +53,8 @@ class TaskViewModel(
                                 this.coroutineContext.job // Сохраняем Job
                             completeTaskUseCase(action.taskId)
                         } else {
-                            taskForDeletionJobMap[action.taskId]?.cancel() // Останавливаем Job
+                            taskForDeletionJobMap.remove(key = action.taskId)
+                                ?.cancel() // Останавливаем Job
                             incompleteTaskUseCase(action.taskId)
                         }
                     }
@@ -62,12 +66,15 @@ class TaskViewModel(
     }
 
     private suspend fun loadTasks() {
-        withContext(ioDispatcher) {
-            getAllTasksUseCase()
-                .distinctUntilChanged()
-                .onStart { _state.value = TaskState.Loading }
-                .catch { e -> _state.value = TaskState.Error(e.message ?: "Ошибка загрузки") }
-                .collect { tasks -> _state.value = TaskState.Loaded(tasks) }
+        collectJob?.cancel()
+        collectJob = viewModelScope.launch {
+            withContext(ioDispatcher) {
+                getAllTasksUseCase()
+                    .distinctUntilChanged()
+                    .onStart { _state.value = TaskState.Loading }
+                    .catch { e -> _state.value = TaskState.Error(e.message ?: "Ошибка загрузки") }
+                    .collect { tasks -> _state.value = TaskState.Loaded(tasks) }
+            }
         }
     }
 }
